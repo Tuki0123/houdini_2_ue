@@ -120,14 +120,14 @@ def format_pose_block(title: str, m: Gf.Matrix4d) -> list[str]:
     qw, qx, qy, qz = _quaternion_wxyz_from_mat3(r3)
     axis, ang_deg = _axis_angle_deg_from_quat_wxyz(qw, qx, qy, qz)
     ex, ey, ez = _euler_xyz_intrinsic_deg_from_mat3(r3)
-    r0 = m.GetRow(0)
-    r1 = m.GetRow(1)
-    r2 = m.GetRow(2)
+    c0 = m.GetColumn(0)
+    c1 = m.GetColumn(1)
+    c2 = m.GetColumn(2)
     return [
         title,
         f"    position abs (m): ({tx:.6f}, {ty:.6f}, {tz:.6f})",
         f"    rotation abs (axis-angle): axis=({axis[0]:.5f},{axis[1]:.5f},{axis[2]:.5f}) angle={ang_deg:.4f} deg",
         f"    rotation abs (Euler XYZ intrinsic deg, approximate): ({ex:.4f}, {ey:.4f}, {ez:.4f})",
-        f"    basis rows (for debug): x=({r0[0]:.5f},{r0[1]:.5f},{r0[2]:.5f}) "
-        f"y=({r1[0]:.5f},{r1[1]:.5f},{r1[2]:.5f}) z=({r2[0]:.5f},{r2[1]:.5f},{r2[2]:.5f})",
+        f"    basis cols (column-vector M*v; for debug): x=({c0[0]:.5f},{c0[1]:.5f},{c0[2]:.5f}) "
+        f"y=({c1[0]:.5f},{c1[1]:.5f},{c1[2]:.5f}) z=({c2[0]:.5f},{c2[1]:.5f},{c2[2]:.5f})",
     ]

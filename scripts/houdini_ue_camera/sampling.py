@@ -35,6 +35,34 @@ def _parm_eval_exists(node: hou.Node, name: str) -> bool:
     return p is not None
 
 
+def _obj_render_resolution_xy(node: hou.Node) -> tuple[float | None, float | None]:
+    """
+    读取 OBJ 相机「渲染分辨率」宽高（像素）。
+
+    官方参数为 ``res``（tuple）；另尝试常见备用名。与 ``aspect``（像素宽高比）一起用于
+    按 Houdini 公式 ``ap_y = (res_y * ap_x) / (res_x * pixel_aspect)`` 推算垂直光圈。
+    """
+    pt = node.parmTuple("res")
+    if pt is not None and len(pt) >= 2:
+        try:
+            rx, ry = float(pt[0].eval()), float(pt[1].eval())
+            if rx > 1e-9 and ry > 1e-9:
+                return rx, ry
+        except Exception:
+            pass
+    for rx_name, ry_name in (
+        ("resx", "resy"),
+        ("res1", "res2"),
+        ("xres", "yres"),
+        ("sizex", "sizey"),
+    ):
+        rx = _parm_eval_float(node, (rx_name,), None)
+        ry = _parm_eval_float(node, (ry_name,), None)
+        if rx is not None and ry is not None and rx > 1e-9 and ry > 1e-9:
+            return float(rx), float(ry)
+    return None, None
+
+
 def obj_camera_world_matrix(node_path: str, frame: int):
     """
     读取 ``/obj/...`` 相机节点在指定帧的世界矩阵（``Gf.Matrix4d``，列向量约定）。
@@ -53,7 +81,12 @@ def obj_camera_intrinsics(node_path: str, frame: int) -> dict:
     """
     读取 OBJ 相机常用成像参数，返回字典（焦距/光圈为毫米，裁剪/正交宽度为米）。
 
-    映射 Houdini cam 常见参数名；缺失时用合理默认。正交判定：``orthowidth`` > 0。
+    水平光圈来自 ``aperture``（毫米）。垂直光圈按 Houdini 与 Mantra 一致的关系由分辨率与
+    **像素宽高比** ``aspect``（非图像宽高比）推算：
+    ``vertical = horizontal * res_y / (res_x * pixel_aspect)``。
+    若读不到分辨率则退回 ``vertical = horizontal``（与旧版错误行为在 PAR=1 时相同，仅作兜底）。
+
+    正交判定：``orthowidth`` > 0。
 
     :param node_path: 相机节点路径。
     :param frame: 设置当前帧后求值。
@@ -67,15 +100,15 @@ def obj_camera_intrinsics(node_path: str, frame: int) -> dict:
 
     focal_mm = _parm_eval_float(n, ("focal",), 35.0)
     hap_mm = _parm_eval_float(n, ("aperture",), 36.0)
-    aspect = _parm_eval_float(n, ("aspect",), None)
-    if aspect is None or aspect < 1e-6:
-        resx = _parm_eval_float(n, ("resx",), None)
-        resy = _parm_eval_float(n, ("resy",), None)
-        if resx and resy and resy > 1e-6:
-            aspect = resx / resy
-        else:
-            aspect = 1.0
-    vap_mm = float(hap_mm) / float(aspect)
+    # 官方文档：View → Pixel aspect ratio，参数名 ``aspect``（IFD image:pixelaspect）
+    pixel_aspect = _parm_eval_float(n, ("aspect",), 1.0)
+    if pixel_aspect is None or pixel_aspect < 1e-9:
+        pixel_aspect = 1.0
+    resx, resy = _obj_render_resolution_xy(n)
+    if resx is not None and resy is not None:
+        vap_mm = float(hap_mm) * float(resy) / (float(resx) * float(pixel_aspect))
+    else:
+        vap_mm = float(hap_mm)
 
     near_m = _parm_eval_float(n, ("near", "vnear"), 0.01)
     far_m = _parm_eval_float(n, ("far", "vfar"), 10000.0)
@@ -214,6 +247,8 @@ def usd_intrinsics_from_prim(stage: Usd.Stage, prim_path: str, frame: int) -> di
     ow_attr = cam.GetOrthographicWidthAttr() if hasattr(cam, "GetOrthographicWidthAttr") else None
     if ow_attr:
         ow = ow_attr.Get(tc)
+        if ow is None:
+            ow = ow_attr.Get(Usd.TimeCode.Default())
 
     projection = "perspective"
     if proj == UsdGeom.Tokens.orthographic:

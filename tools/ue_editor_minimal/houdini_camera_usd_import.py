@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Import USD (USDA) into Content via USD Stage Editor API — assets under /Game/houdini_camera/...
+Houdini → UE 相机管线：通过 **USD Stage Editor** 将 USDA 导入到 Content（默认 ``/Game/houdini_camera``）。
 
-Uses unreal.UsdStageEditorLibrary:
-  open_stage_editor -> file_open(usda) -> actions_import(content_folder, options) -> file_close
-
-Shipped with HoudiniUeCameraImporter plugin under Plugins/.../Content/Python/.
-Requires: manifest_smoke.py (same folder).
+流程概览：``open_stage_editor`` → ``file_open(usda)`` → ``actions_import(content_folder, options)``
+→ ``file_close``。依赖同目录下的 ``houdini_camera_manifest`` 解析清单。
 """
 
 from __future__ import annotations
@@ -18,9 +15,9 @@ from pathlib import Path
 
 import unreal
 
-import manifest_smoke
+import houdini_camera_manifest
 
-PREFIX = "[import_smoke]"
+_LOG_PREFIX = "[HoudiniCamera:Import]"
 
 # Default Content path (matches student spec: houdini_camera folder under Content)
 DEFAULT_CONTENT_ROOT = "/Game/houdini_camera"
@@ -40,14 +37,12 @@ def ensure_content_dir(content_path: str) -> None:
     """Create /Game/... folder if missing."""
     if not unreal.EditorAssetLibrary.does_directory_exist(content_path):
         unreal.EditorAssetLibrary.make_directory(content_path)
-        unreal.log_warning(f"{PREFIX} created Content folder: {content_path}")
+        unreal.log_warning(f"{_LOG_PREFIX} created Content folder: {content_path}")
 
 
 def _destroy_actor_safe(actor: unreal.Actor) -> bool:
+    """编辑器下销毁 Actor；统一走 ``EditorLevelLibrary``（避免误用不存在的实例方法）。"""
     try:
-        if hasattr(actor, "destroy_actor"):
-            actor.destroy_actor()
-            return True
         unreal.EditorLevelLibrary.destroy_actor(actor)
         return True
     except Exception:
@@ -60,7 +55,9 @@ def _purge_cine_camera_actors_in_editor_world() -> None:
     if policy == "none":
         return
     if policy != "all":
-        unreal.log_warning(f"{PREFIX} unknown PURGE_LEVEL_CINECAMERA_POLICY={policy!r}, using 'all'")
+        unreal.log_warning(
+            f"{_LOG_PREFIX} unknown PURGE_LEVEL_CINECAMERA_POLICY={policy!r}, using 'all'"
+        )
         policy = "all"
     world = unreal.EditorLevelLibrary.get_editor_world()
     if world is None:
@@ -74,7 +71,7 @@ def _purge_cine_camera_actors_in_editor_world() -> None:
         if _destroy_actor_safe(a):
             removed += 1
     if removed:
-        unreal.log_warning(f"{PREFIX} purge: destroyed {removed} CineCameraActor(s) in level")
+        unreal.log_warning(f"{_LOG_PREFIX} purge: destroyed {removed} CineCameraActor(s) in level")
 
 
 def _purge_level_sequence_actors_for_content_root(content_root: str) -> None:
@@ -101,7 +98,9 @@ def _purge_level_sequence_actors_for_content_root(content_root: str) -> None:
         if _destroy_actor_safe(a):
             removed += 1
     if removed:
-        unreal.log_warning(f"{PREFIX} purge: destroyed {removed} LevelSequenceActor(s) under {root}")
+        unreal.log_warning(
+            f"{_LOG_PREFIX} purge: destroyed {removed} LevelSequenceActor(s) under {root}"
+        )
 
 
 def _purge_all_assets_under_content_root(content_root: str) -> None:
@@ -120,14 +119,12 @@ def _purge_all_assets_under_content_root(content_root: str) -> None:
                 unreal.EditorAssetLibrary.delete_asset(p)
         except Exception:
             pass
-    unreal.log_warning(f"{PREFIX} purge: removed up to {len(paths)} asset path(s) under {root}")
+    unreal.log_warning(
+        f"{_LOG_PREFIX} purge: removed up to {len(paths)} asset path(s) under {root}"
+    )
 
 
-def purge_houdini_camera_import_before_reimport(
-    content_root: str,
-    *,
-    manifest: dict | None = None,
-) -> None:
+def purge_houdini_camera_import_before_reimport(content_root: str) -> None:
     """
     在写入 USDA 之前调用，顺序为：
 
@@ -135,15 +132,13 @@ def purge_houdini_camera_import_before_reimport(
     2. 按 ``PURGE_LEVEL_CINECAMERA_POLICY`` 删除关卡里残留的 ``CineCameraActor``（``import_actors`` 生成、
        不会随 Content 资产删除而消失）。
     3. 递归删除 ``content_root`` 下全部 Content 资产，再 ``ensure_content_dir``。
-
-    ``manifest`` 参数保留给调用方（如 EUW 扩展）；当前 CineCamera 清除策略见 ``PURGE_LEVEL_CINECAMERA_POLICY``。
     """
     root = content_root.rstrip("/")
     if not root.startswith("/Game/"):
-        unreal.log_warning(f"{PREFIX} purge skipped: content_root must be under /Game/, got {root!r}")
+        unreal.log_warning(
+            f"{_LOG_PREFIX} purge skipped: content_root must be under /Game/, got {root!r}"
+        )
         return
-    if manifest is not None:
-        unreal.log_warning(f"{PREFIX} purge: manifest passed (cameras={len(manifest.get('cameras') or [])})")
     _purge_level_sequence_actors_for_content_root(root)
     _purge_cine_camera_actors_in_editor_world()
     _purge_all_assets_under_content_root(root)
@@ -188,9 +183,11 @@ def _post_import_flush_and_count_assets(content_dest: str) -> int:
     n = len(assets) if assets else 0
     if assets:
         sample = ", ".join(str(a) for a in assets[:6])
-        unreal.log_warning(f"{PREFIX} assets under {content_dest!r} (n={n}): {sample}…")
+        unreal.log_warning(f"{_LOG_PREFIX} assets under {content_dest!r} (n={n}): {sample}…")
     else:
-        unreal.log_warning(f"{PREFIX} no assets listed under {content_dest!r} after import flush")
+        unreal.log_warning(
+            f"{_LOG_PREFIX} no assets listed under {content_dest!r} after import flush"
+        )
     return n
 
 
@@ -212,7 +209,7 @@ def build_import_options(*, import_level_actors: bool = True) -> unreal.UsdStage
     o.set_editor_property("import_actors", import_level_actors)
     o.set_editor_property("import_level_sequences", True)
     o.set_editor_property("import_geometry", False)
-    o.set_editor_property("import_materials", True)
+    o.set_editor_property("import_materials", False)
     o.set_editor_property("import_groom_assets", False)
     o.set_editor_property("import_sparse_volume_textures", False)
     try:
@@ -244,7 +241,7 @@ def import_usda_to_content(
     """
     p = Path(os.path.expandvars(usda_abs_path.strip().strip('"')))
     if not p.is_file():
-        unreal.log_error(f"{PREFIX} file not found: {p}")
+        unreal.log_error(f"{_LOG_PREFIX} file not found: {p}")
         return False
     disk_path = str(p.resolve())
 
@@ -256,7 +253,7 @@ def import_usda_to_content(
         unreal.UsdStageEditorLibrary.file_open(disk_path)
         unreal.UsdStageEditorLibrary.actions_import(content_dest, opts)
     except Exception as exc:  # noqa: BLE001
-        unreal.log_error(f"{PREFIX} import failed for {disk_path}: {exc!r}")
+        unreal.log_error(f"{_LOG_PREFIX} import failed for {disk_path}: {exc!r}")
         try:
             unreal.UsdStageEditorLibrary.file_close()
         except Exception:
@@ -266,7 +263,7 @@ def import_usda_to_content(
     try:
         n_assets = _post_import_flush_and_count_assets(content_dest)
     except Exception as exc:  # noqa: BLE001
-        unreal.log_error(f"{PREFIX} post-import flush failed: {exc!r}")
+        unreal.log_error(f"{_LOG_PREFIX} post-import flush failed: {exc!r}")
         n_assets = -1
     try:
         unreal.UsdStageEditorLibrary.file_close()
@@ -275,26 +272,26 @@ def import_usda_to_content(
 
     if n_assets == 0:
         unreal.log_error(
-            f"{PREFIX} import reported no assets under {content_dest!r}. "
+            f"{_LOG_PREFIX} import reported no assets under {content_dest!r}. "
             "Check: USD Stage Editor plugins enabled; Output Log for USD errors; "
-            "Content Browser 里打开 /Game/houdini_camera（不是只看磁盘上的 Content 文件夹）。"
-            "若仍为空，可把 import_smoke._post_import_flush_and_count_assets 里的 sleep 略加大。"
+            "Content Browser 里打开 /Game/houdini_camera（不是只看磁盘上的 Content 文件夹）。\n"
+            "若仍为空，可把 houdini_camera_usd_import._post_import_flush_and_count_assets 里的 sleep 略加大。"
         )
         return False
     if n_assets < 0:
         unreal.log_warning(
-            f"{PREFIX} could not verify asset count under {content_dest!r}; "
+            f"{_LOG_PREFIX} could not verify asset count under {content_dest!r}; "
             "请手动在 Content Browser 中确认是否已有 LevelSequence 等资产。"
         )
 
     unreal.log_warning(
-        f"{PREFIX} imported -> {content_dest} | source={disk_path}"
+        f"{_LOG_PREFIX} imported -> {content_dest} | source={disk_path}"
         + (f" | assets={n_assets}" if n_assets >= 0 else "")
     )
     return True
 
 
-def import_manifest_cameras(
+def import_cameras_from_manifest(
     manifest_abs_path: str | None = None,
     *,
     content_root: str = DEFAULT_CONTENT_ROOT,
@@ -302,23 +299,23 @@ def import_manifest_cameras(
     show_dialog: bool = True,
 ) -> int:
     """
-    Read manifest (default: ``manifest_smoke.default_fixed_manifest_abs_path()``),
-    then import merged or per-camera USDA via USD Stage Editor（源 USDA 不变）。
+    读取清单（默认 ``houdini_camera_manifest.default_fixed_manifest_abs_path()``），
+    再经 USD Stage Editor 导入合并 USDA 或逐机 USDA（磁盘上的 USDA 文件不改写）。
 
     关卡中 LevelSequenceActor / 相机位置等由 EUW 蓝图自行处理。
     """
     if manifest_abs_path is None or not str(manifest_abs_path).strip():
-        manifest_abs_path = manifest_smoke.default_fixed_manifest_abs_path()
+        manifest_abs_path = houdini_camera_manifest.default_fixed_manifest_abs_path()
     try:
-        data = manifest_smoke.load_manifest(manifest_abs_path)
+        data = houdini_camera_manifest.load_manifest(manifest_abs_path)
     except Exception as exc:  # noqa: BLE001
-        unreal.log_error(f"{PREFIX} manifest load failed: {exc!r}")
+        unreal.log_error(f"{_LOG_PREFIX} manifest load failed: {exc!r}")
         return 0
 
-    errs = manifest_smoke.validate_manifest(data)
+    errs = houdini_camera_manifest.validate_manifest(data)
     if errs:
         for e in errs:
-            unreal.log_error(f"{PREFIX} {e}")
+            unreal.log_error(f"{_LOG_PREFIX} {e}")
         return 0
 
     base = Path(manifest_abs_path).resolve().parent
@@ -327,17 +324,15 @@ def import_manifest_cameras(
         return 0
 
     ensure_content_dir(content_root)
-    purge_houdini_camera_import_before_reimport(content_root, manifest=data)
+    purge_houdini_camera_import_before_reimport(content_root)
     opts = build_import_options()
     ok = 0
 
-    merged_usda_path = manifest_smoke.merged_usda_file_for_import(data, manifest_abs_path)
+    merged_usda_path = houdini_camera_manifest.merged_usda_file_for_import(data, manifest_abs_path)
     if merged_usda_path is not None:
         if not merged_usda_path.is_file():
-            unreal.log_error(f"{PREFIX} merged USDA missing: {merged_usda_path}")
+            unreal.log_error(f"{_LOG_PREFIX} merged USDA missing: {merged_usda_path}")
             return 0
-        # Single flat root: Level Sequences land under content_root (e.g. /Game/houdini_camera),
-        # not an extra HoudiniCameraShoot / World / ... mirror (see prim_path_folder_structure).
         dest = content_root.rstrip("/")
         if import_usda_to_content(str(merged_usda_path.resolve()), dest, options=opts):
             ok = 1
@@ -352,24 +347,24 @@ def import_manifest_cameras(
                 continue
             usda = base / rel_s
             if not usda.is_file():
-                unreal.log_warning(f"{PREFIX} skip missing usda: {usda}")
+                unreal.log_warning(f"{_LOG_PREFIX} skip missing usda: {usda}")
                 continue
             dest = f"{content_root.rstrip('/')}/{_safe_folder_segment(name)}"
             if import_usda_to_content(str(usda.resolve()), dest, options=opts):
                 ok += 1
 
-    unreal.log_warning(f"{PREFIX} batch done | imported={ok}")
+    unreal.log_warning(f"{_LOG_PREFIX} batch done | imported={ok}")
 
     if show_dialog:
         try:
-            merged = manifest_smoke.manifest_uses_merged_usda(data)
+            merged = houdini_camera_manifest.manifest_uses_merged_usda(data)
             hint = (
                 "Merged USDA: Level Sequence(s) under import root (flat by asset type).\n"
                 if merged
                 else "Per-camera USDA folders.\n"
             )
             unreal.EditorDialog.show_message(
-                title=unreal.Text("import smoke"),
+                title=unreal.Text("Houdini camera — import"),
                 message=unreal.Text(
                     f"Import batches completed: {ok}\nRoot: {content_root}\n{hint}"
                     "Check Content Browser -> houdini_camera."
@@ -378,6 +373,6 @@ def import_manifest_cameras(
                 default_value=unreal.AppReturnType.OK,
             )
         except Exception as exc:
-            unreal.log_error(f"{PREFIX} dialog: {exc!r}")
+            unreal.log_error(f"{_LOG_PREFIX} dialog: {exc!r}")
 
     return ok

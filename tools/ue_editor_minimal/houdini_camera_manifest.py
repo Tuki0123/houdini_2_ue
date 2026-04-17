@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Read and validate houdini_ue_camera_manifest.json (same schema as Houdini pipeline panel).
+Houdini → UE 相机管线：**清单**（``houdini_ue_camera_manifest.json``）的读取、校验与路径解析。
 
-Shipped with HoudiniUeCameraImporter plugin under Plugins/.../Content/Python/.
+与 Houdini 侧 ``scripts/houdini_ue_camera/pipeline_paths`` 的固定路径规则一致；复制到 UE 工程
+``Content/Python/`` 后由编辑器 Python 加载（与 ``houdini_camera_usd_import``、``houdini_camera_euw_api`` 同目录）。
 """
 
 from __future__ import annotations
@@ -18,8 +19,10 @@ import unreal
 MANIFEST_FILENAME = "houdini_ue_camera_manifest.json"
 # 与 ``houdini_ue_camera.pipeline_paths.HOUDINI_USER_AREA_VERSION``、根目录 installHouPackage 一致
 DEFAULT_HOUDINI_USER_AREA_VERSION = "20.5"
-# 与 Houdini ``houdini_ue_camera.usd_writer.MERGED_USDA_FILENAME`` 一致（UE 侧不 import 该包）
+# 与 Houdini ``houdini_ue_camera.usd_writer.MERGED_USDA_FILENAME`` 一致
 DEFAULT_MERGED_USDA_RELATIVE = "houdini_cameras_merged.usda"
+
+_LOG_PREFIX = "[HoudiniCamera:Manifest]"
 
 
 def _effective_usda_relative(cam: dict[str, Any]) -> str | None:
@@ -96,10 +99,10 @@ def default_fixed_manifest_abs_path(
     - Linux: ``~/houdini<ver>/...``
     """
     home = home or Path.home()
-    sys = platform.system()
-    if sys == "Windows":
+    plat = platform.system()
+    if plat == "Windows":
         pref = home / "Documents" / f"houdini{version_folder}"
-    elif sys == "Darwin":
+    elif plat == "Darwin":
         pref = home / "Library" / "Preferences" / "houdini" / version_folder
     else:
         pref = home / f"houdini{version_folder}"
@@ -198,30 +201,30 @@ def check_usda_files(manifest_path: str, data: dict[str, Any]) -> list[str]:
     return warnings
 
 
-def run_manifest_smoke(
+def run_manifest_validation(
     manifest_abs_path: str | None = None,
     *,
     show_dialog: bool = True,
     show_success_dialog: bool = True,
 ) -> bool:
     """
-    Load manifest, validate schema, check .usda files, log summary.
+    读取清单、校验 schema、检查磁盘上的 USDA，并写 Output Log。
+
     ``manifest_abs_path`` 为 ``None`` 或空串时使用 ``default_fixed_manifest_abs_path()``。
 
-    ``show_dialog``：加载/校验失败时是否弹窗。``show_success_dialog``：全部通过时是否弹「Manifest OK」
-    （EUW 里可传 ``show_success_dialog=False``，仅 ``print`` / Output Log）。
+    ``show_dialog``：加载/校验失败时是否弹窗。``show_success_dialog``：全部通过时是否弹成功摘要
+    （EUW 里可传 ``False``，仅看 Output Log）。
     """
-    prefix = "[manifest_smoke]"
     if manifest_abs_path is None or not str(manifest_abs_path).strip():
         manifest_abs_path = default_fixed_manifest_abs_path()
     try:
         data = load_manifest(manifest_abs_path)
     except Exception as exc:  # noqa: BLE001
-        unreal.log_error(f"{prefix} load failed: {exc!r}")
+        unreal.log_error(f"{_LOG_PREFIX} load failed: {exc!r}")
         if show_dialog:
             try:
                 unreal.EditorDialog.show_message(
-                    title=unreal.Text("manifest smoke"),
+                    title=unreal.Text("Houdini camera — manifest"),
                     message=unreal.Text(f"Load failed:\n{exc}"),
                     message_type=unreal.AppMsgType.OK,
                     default_value=unreal.AppReturnType.OK,
@@ -233,11 +236,11 @@ def run_manifest_smoke(
     errs = validate_manifest(data)
     if errs:
         for e in errs:
-            unreal.log_error(f"{prefix} {e}")
+            unreal.log_error(f"{_LOG_PREFIX} {e}")
         if show_dialog:
             try:
                 unreal.EditorDialog.show_message(
-                    title=unreal.Text("manifest smoke"),
+                    title=unreal.Text("Houdini camera — manifest"),
                     message=unreal.Text("Validation failed:\n" + "\n".join(errs[:12])),
                     message_type=unreal.AppMsgType.OK,
                     default_value=unreal.AppReturnType.OK,
@@ -248,12 +251,12 @@ def run_manifest_smoke(
 
     missing = check_usda_files(manifest_abs_path, data)
     for w in missing:
-        unreal.log_warning(f"{prefix} {w}")
+        unreal.log_warning(f"{_LOG_PREFIX} {w}")
 
     exp = data.get("export") or {}
     cams = data.get("cameras") or []
     unreal.log_warning(
-        f"{prefix} OK | cameras={len(cams)} | "
+        f"{_LOG_PREFIX} OK | cameras={len(cams)} | "
         f"frames={exp.get('frame_start')}..{exp.get('frame_end')} step={exp.get('frame_step')} "
         f"fps={exp.get('fps')} mpu={exp.get('export_meters_per_unit')}"
     )
@@ -267,12 +270,12 @@ def run_manifest_smoke(
                 f"Missing usda files: {len(missing)}"
             )
             unreal.EditorDialog.show_message(
-                title=unreal.Text("manifest smoke"),
+                title=unreal.Text("Houdini camera — manifest"),
                 message=unreal.Text(msg),
                 message_type=unreal.AppMsgType.OK,
                 default_value=unreal.AppReturnType.OK,
             )
         except Exception as exc:
-            unreal.log_error(f"{prefix} dialog: {exc!r}")
+            unreal.log_error(f"{_LOG_PREFIX} dialog: {exc!r}")
 
     return True

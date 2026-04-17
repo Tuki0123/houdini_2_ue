@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 
+import hou
 from pxr import Gf, Usd, UsdGeom
 
 from .compute import camera_xform_pipeline
@@ -28,7 +29,7 @@ from .sampling import (
 MERGED_USDA_FILENAME = "houdini_cameras_merged.usda"
 
 
-def _safe_segment(name: str) -> str:
+def safe_camera_prim_segment(name: str) -> str:
     """
     将显示名转为 USD prim 路径段：仅字母数字下划线，且不以数字开头。
 
@@ -114,14 +115,12 @@ def _set_projection_and_lens(cam: UsdGeom.Camera, intr: dict, tc: Usd.TimeCode, 
                 oa.Set(ow_usd, tc)
             except Exception:
                 pass
-        cam.GetFocalLengthAttr().Set(float(intr["focal_length_mm"]), tc)
-        cam.GetHorizontalApertureAttr().Set(float(intr["horizontal_aperture_mm"]), tc)
-        cam.GetVerticalApertureAttr().Set(float(intr["vertical_aperture_mm"]), tc)
     else:
         cam.GetProjectionAttr().Set(UsdGeom.Tokens.perspective, tc)
-        cam.GetFocalLengthAttr().Set(float(intr["focal_length_mm"]), tc)
-        cam.GetHorizontalApertureAttr().Set(float(intr["horizontal_aperture_mm"]), tc)
-        cam.GetVerticalApertureAttr().Set(float(intr["vertical_aperture_mm"]), tc)
+
+    cam.GetFocalLengthAttr().Set(float(intr["focal_length_mm"]), tc)
+    cam.GetHorizontalApertureAttr().Set(float(intr["horizontal_aperture_mm"]), tc)
+    cam.GetVerticalApertureAttr().Set(float(intr["vertical_aperture_mm"]), tc)
 
     near_usd = float(intr["clip_near_m"]) / export_mpu
     far_usd = float(intr["clip_far_m"]) / export_mpu
@@ -270,7 +269,7 @@ def export_camera_for_ue55(
         )
 
     root = UsdGeom.Xform.Define(stage, "/World")
-    seg = _safe_segment(camera_display_name)
+    seg = safe_camera_prim_segment(camera_display_name)
     cam_path = f"/World/{seg}"
     cam_schema = UsdGeom.Camera.Define(stage, cam_path)
     cam_prim = cam_schema.GetPrim()
@@ -350,7 +349,7 @@ def export_camera_for_ue55(
     )
     _log_call(
         log,
-        "[UE note] Import via USD Stage Editor (import_smoke): merged file → "
+        "[UE note] Import via USD Stage Editor (houdini_camera_usd_import): merged file → "
         "``content_root`` e.g. /Game/houdini_camera with prim_path_folder_structure=False "
         "so Level Sequences sit under that root (by asset type), not deep /World/... folders.",
     )
@@ -375,7 +374,7 @@ def export_merged_cameras_for_ue55(
     将多台 ``/obj`` 相机写入**单个** USDA：每台 ``UsdGeom.Camera`` 位于 ``/World/<safe_basename>``。
 
     与逐机多文件相比，UE 侧一次 ``actions_import`` 更易得到**一个** Level Sequence 内含多机；
-    相机 prim 名使用 Houdini 节点 basename（经 ``_safe_segment`` 清洗）。
+    相机 prim 名使用 Houdini 节点 basename（经 ``safe_camera_prim_segment`` 清洗）。
 
     :param output_path: 合并 ``.usda`` 路径。
     :param camera_obj_paths: 相机节点路径列表（非空）。
@@ -428,7 +427,7 @@ def export_merged_cameras_for_ue55(
     cams_runtime: list[tuple[str, str, UsdGeom.Camera, object]] = []
     for obj_path in camera_obj_paths:
         display = obj_path.strip().split("/")[-1] or "cam"
-        seg = _safe_segment(display)
+        seg = safe_camera_prim_segment(display)
         cam_path = f"/World/{seg}"
         cam_schema = UsdGeom.Camera.Define(stage, cam_path)
         xf = UsdGeom.Xformable(cam_schema.GetPrim())
@@ -502,7 +501,7 @@ def export_merged_cameras_for_ue55(
     )
     _log_call(
         log,
-        "[UE import] manifest_smoke + import_smoke: set merged_usda_relative and import once into "
+        "[UE import] houdini_camera_manifest + houdini_camera_usd_import: merged_usda_relative then import into "
         "/Game/houdini_camera (or your content_root).",
     )
 
@@ -517,8 +516,6 @@ def list_cameras_for_ui(source_mode: str, lop_node_path: str | None = None) -> l
     """
     sm = (source_mode or "").lower()
     if sm == "obj":
-        import hou
-
         root = hou.node("/obj")
         if root is None:
             return []

@@ -16,19 +16,18 @@ from .usd_writer import (
     export_camera_for_ue55,
     export_merged_cameras_for_ue55,
     list_cameras_for_ui,
+    safe_camera_prim_segment,
 )
-from .version import LAST_MODIFIED, VERSION
 
 __all__ = [
     "export_camera_for_ue55",
     "export_merged_cameras_for_ue55",
     "list_cameras_for_ui",
     "MERGED_USDA_FILENAME",
+    "safe_camera_prim_segment",
     "HOUDINI_USER_AREA_VERSION",
     "MANIFEST_FILENAME",
     "fixed_manifest_path_for_running_houdini",
     "fixed_manifest_path_in_pref_dir",
     "houdini_user_pref_dir_from_home",
-    "VERSION",
-    "LAST_MODIFIED",
 ]

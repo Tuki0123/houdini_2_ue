@@ -3,7 +3,7 @@
 与仓库根 ``installHouPackage.houdini_locations`` 一致的 Houdini 用户区版本号及
 **固定清单路径**（清单始终写在 ``HOUDINI_USER_PREF_DIR`` 下，每次导出覆盖）。
 
-UE 侧 ``manifest_smoke.default_fixed_manifest_abs_path`` 须与本模块路径规则保持同步。
+UE 侧 ``houdini_camera_manifest.default_fixed_manifest_abs_path``（见 ``tools/ue_editor_minimal``）须与本模块路径规则保持同步。
 """
 
 from __future__ import annotations

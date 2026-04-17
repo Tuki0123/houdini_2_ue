@@ -43,9 +43,8 @@ from houdini_ue_camera.usd_writer import (
     MERGED_USDA_FILENAME,
     export_merged_cameras_for_ue55,
     list_cameras_for_ui,
-    _safe_segment,
+    safe_camera_prim_segment,
 )
-from houdini_ue_camera.version import LAST_MODIFIED, VERSION
 
 _CAM_TOKEN = re.compile(r"^[A-Za-z0-9_]+$")
 
@@ -87,13 +86,12 @@ def _node_world_translate_meters(n: hou.Node) -> tuple[float, float, float] | No
     return world_origin_translate_meters(n, frame=fr)
 
 
-def _frame_range_hint(cam_path: str) -> str:
+def _frame_range_hint(_cam_path: str) -> str:
     """
     在相机列表每行右侧显示的帧范围提示（占位；完整「每机独立范围」见需求 C12）。
 
-    :param cam_path: 相机路径（当前未用，保留与后续 C12 扩展签名一致）。
+    :param _cam_path: 相机路径（预留 C12 每机独立帧范围）。
     """
-    del cam_path  # 预留：每机独立帧范围
     try:
         f1 = _default_frame_end()
         return f"1-{f1} (playbar default)"
@@ -107,7 +105,7 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
     def __init__(self, parent=None):
         """创建窗口部件、连接信号，并执行首次相机列表扫描。"""
         super().__init__(parent)
-        self.setWindowTitle(f"Houdini -> UE camera export  v{VERSION}")
+        self.setWindowTitle("Houdini -> UE camera export")
         self.resize(720, 640)
 
         self._cam_checkboxes: dict[str, QtWidgets.QCheckBox] = {}
@@ -227,7 +225,7 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
         btn_row.addWidget(btn_close)
         root.addLayout(btn_row)
 
-        self._log_line(f"[houdini_ue_camera] v{VERSION} | last modified: {LAST_MODIFIED}", "info")
+        self._log_line("[houdini_ue_camera] panel ready", "info")
         self._refresh_cameras()
 
     def _on_sample_mode(self) -> None:
@@ -413,6 +411,12 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
                 self._log_line(f"[warn] could not delete {p}: {exc!r}", "warn")
 
         pivot = (self._pvx.value(), self._pvy.value(), self._pvz.value())
+        pivot_is_origin = all(abs(float(x)) < 1e-9 for x in pivot)
+        self._log_line(
+            f"[export] pivot_world_meters (from spinboxes)={pivot} — if still (0,0,0), click "
+            "'Read world translate from selection' before export; selecting a node alone does not update pivot.",
+            "warn" if pivot_is_origin else "info",
+        )
         fps = float(self._fps.value())
         export_mpu = float(DEFAULT_EXPORT_METERS_PER_UNIT)
         src_mpu = float(self._src_mpu.value())
@@ -424,7 +428,7 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
                 {
                     "obj_path": cam_path,
                     "display_name": name,
-                    "usd_prim_path": f"/World/{_safe_segment(name)}",
+                    "usd_prim_path": f"/World/{safe_camera_prim_segment(name)}",
                 }
             )
 
@@ -458,7 +462,7 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
         manifest = {
             "schema_version": 1,
             "exported_at": datetime.now(timezone.utc).isoformat(),
-            "houdini": {"panel": "HoudiniUeCameraPipelinePanel", "package_version": VERSION},
+            "houdini": {"panel": "HoudiniUeCameraPipelinePanel"},
             "export": {
                 "fps": fps,
                 "frame_start": f0,

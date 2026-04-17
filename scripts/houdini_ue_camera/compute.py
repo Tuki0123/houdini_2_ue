@@ -8,9 +8,35 @@
 
 from __future__ import annotations
 
-from pxr import Gf
-
 from .coords import compose_export_matrix
+
+
+def _matrix4d_translation_column_vec(Gf, tx: float, ty: float, tz: float):
+    """
+    列向量约定 ``p' = M p`` 下的纯平移矩阵（平移写在 **第 4 列**）。
+
+    ``Gf.Matrix4d`` 的 16 元构造为 **行主序** 填入行；勿依赖 ``SetTranslate``：在部分
+    Houdini 内嵌 pxr 版本上 ``Matrix4d(1.0); SetTranslate(Vec3d)`` 曾出现**平移未写入**、
+    ``t_inv`` 仍为恒等，导致 ``after_pivot`` 与 RAW 完全一致、pivot 形同未生效。
+    """
+    return Gf.Matrix4d(
+        1.0,
+        0.0,
+        0.0,
+        tx,
+        0.0,
+        1.0,
+        0.0,
+        ty,
+        0.0,
+        0.0,
+        1.0,
+        tz,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
 
 
 def apply_pivot_translation(world_gf, pivot_world_meters, Gf):
@@ -30,50 +56,8 @@ def apply_pivot_translation(world_gf, pivot_world_meters, Gf):
     px, py, pz = (float(pivot_world_meters[0]), float(pivot_world_meters[1]), float(pivot_world_meters[2]))
     if abs(px) + abs(py) + abs(pz) < 1e-12:
         return world_gf
-    t_inv = Gf.Matrix4d(1.0)
-    try:
-        t_inv.SetTranslate(Gf.Vec3d(-px, -py, -pz))
-    except AttributeError:
-        t_inv = Gf.Matrix4d(
-            1.0,
-            0.0,
-            0.0,
-            -px,
-            0.0,
-            1.0,
-            0.0,
-            -py,
-            0.0,
-            0.0,
-            1.0,
-            -pz,
-            0.0,
-            0.0,
-            0.0,
-            1.0,
-        )
+    t_inv = _matrix4d_translation_column_vec(Gf, -px, -py, -pz)
     return t_inv * Gf.Matrix4d(world_gf)
-
-
-def compose_stage_export_matrix(
-    world_after_pivot,
-    source_meters_per_unit: float,
-    export_meters_per_unit: float,
-    Gf,
-    apply_ue_post_matrix: bool,
-):
-    """
-    米制源矩阵 → 导出 Stage 长度单位下的列向量 4×4（仅缩放平移，旋转 3×3 保持刚体）。
-
-    委托 ``coords.compose_export_matrix``。
-    """
-    return compose_export_matrix(
-        world_after_pivot,
-        source_meters_per_unit,
-        export_meters_per_unit,
-        Gf,
-        apply_ue_post_matrix,
-    )
 
 
 def apply_transpose_for_ue_import(m_out, transpose_xform_for_ue_import: bool):
@@ -108,7 +92,7 @@ def camera_xform_pipeline(
     m_after_pivot = apply_pivot_translation(raw_world_gf, pivot_world_meters, Gf)
     steps.append(("after_pivot_world_m", m_after_pivot))
 
-    m_compose = compose_stage_export_matrix(
+    m_compose = compose_export_matrix(
         m_after_pivot,
         float(source_meters_per_unit),
         float(export_meters_per_unit),
