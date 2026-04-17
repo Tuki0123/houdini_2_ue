@@ -16,14 +16,7 @@ from pxr import Gf, Usd, UsdGeom
 from .compute import camera_xform_pipeline
 from .coords import DEFAULT_EXPORT_METERS_PER_UNIT, length_scale_factor
 from .transform_log import format_pose_block
-from .sampling import (
-    list_usd_camera_prim_paths,
-    obj_camera_intrinsics,
-    obj_camera_world_matrix,
-    usd_camera_world_matrix,
-    usd_intrinsics_from_prim,
-    usd_stage_from_lop,
-)
+from .sampling import obj_camera_intrinsics, obj_camera_world_matrix
 
 # 合并导出：单 USDA 文件名（与 manifest ``merged_usda_relative`` 一致）
 MERGED_USDA_FILENAME = "houdini_cameras_merged.usda"
@@ -52,7 +45,7 @@ def _intrinsics_lines(intr: dict, export_mpu: float, prefix: str = "  ") -> list
     """
     把成像字典格式化为多行英文说明，写入导出日志（避免面板编码问题）。
 
-    :param intr: ``obj_camera_intrinsics`` / ``usd_intrinsics_from_prim`` 的返回值。
+    :param intr: ``obj_camera_intrinsics`` 的返回值。
     :param export_mpu: 导出 Stage 的 ``metersPerUnit``。
     :param prefix: 每行前缀空格。
     """
@@ -166,193 +159,6 @@ def _set_sidecar_metadata(prim, intr: dict) -> None:
             prim.SetCustomData(cur)
         except Exception:
             pass
-
-
-def export_camera_for_ue55(
-    output_path,
-    *,
-    source_mode: str,
-    camera_display_name: str = "export_cam",
-    frame_start: int = 1,
-    frame_end: int = 24,
-    frame_step: int = 1,
-    fps: float = 24.0,
-    export_meters_per_unit: float = DEFAULT_EXPORT_METERS_PER_UNIT,
-    source_meters_per_unit: float = 1.0,
-    apply_ue_post_matrix: bool = False,
-    obj_node_path: str | None = None,
-    lop_node_path: str | None = None,
-    usd_prim_path: str | None = None,
-    pivot_world_meters=None,
-    log=None,
-    transpose_xform_for_ue_import: bool = True,
-):
-    """
-    写出一个 USDA 文件：内含单台 ``UsdGeom.Camera``，在整数帧（可步进稀疏）上采样矩阵与镜头。
-
-    **transpose_xform_for_ue_import**（默认 ``True``）：
-    UE 侧可能按行向量 ``p' = p * M`` 读 ``matrix4d``，而 OpenUSD 列为 ``p' = M * p``；
-    写入 ``M^T`` 常可修复 Sequencer 里位置钉在 0 的问题；若只在纯 USD 查看器里不对再关。
-
-    **frame_step**：>=1；>1 时用源帧号作为稀疏 time code（与清单 ``frame_step`` 一致）。
-
-    **pivot_world_meters**：可选 ``(x,y,z)`` 世界米；在长度缩放与 compose 之前左乘 ``inv(T)``。
-
-    **source_mode**：
-    - ``\"obj\"``：需要 ``obj_node_path``（``/obj/.../cam``）。
-    - ``\"usd\"``：需要 ``lop_node_path`` 与 ``usd_prim_path``（Solaris LOP 上的 USD Camera）。
-
-    日志回调 ``log`` 若提供，应接受单条 **英文** 字符串（面板用富文本显示）。
-
-    :param output_path: 输出 ``.usda`` 路径。
-    :raises ValueError: 参数组合不合法。
-    """
-    source_mode = (source_mode or "").lower()
-    if source_mode not in ("obj", "usd"):
-        raise ValueError('source_mode must be "obj" or "usd"')
-
-    if source_mode == "obj" and not obj_node_path:
-        raise ValueError("obj mode requires obj_node_path")
-    if source_mode == "usd" and (not lop_node_path or not usd_prim_path):
-        raise ValueError("usd mode requires lop_node_path and usd_prim_path")
-
-    usd_stage = None
-    src_mpu_obj = float(source_meters_per_unit)
-    if source_mode == "usd":
-        usd_stage = usd_stage_from_lop(lop_node_path)
-        src_mpu_obj = float(UsdGeom.GetStageMetersPerUnit(usd_stage))
-
-    out = str(output_path)
-    stage = Usd.Stage.CreateNew(out)
-    UsdGeom.SetStageMetersPerUnit(stage, float(export_meters_per_unit))
-    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
-    stage.SetFramesPerSecond(float(fps))
-    if hasattr(stage, "SetTimeCodesPerSecond"):
-        stage.SetTimeCodesPerSecond(float(fps))
-
-    root_layer = stage.GetRootLayer()
-    try:
-        root_layer.startTimeCode = float(frame_start)
-        root_layer.endTimeCode = float(frame_end)
-    except Exception:
-        pass
-
-    exp_mpu = float(export_meters_per_unit)
-    fscale = length_scale_factor(src_mpu_obj, exp_mpu)
-    step = max(1, int(frame_step or 1))
-    _log_call(
-        log,
-        "[export] Houdini -> UE 5.5 camera USD\n"
-        f"  output: {out}\n"
-        f"  mode: {source_mode}  displayName={camera_display_name!r}\n"
-        f"  frames: {frame_start}-{frame_end}  step={step}  fps={fps}\n"
-        f"  export_metersPerUnit={exp_mpu} (1 USD unit = {exp_mpu} m)\n"
-        f"  source_metersPerUnit={src_mpu_obj}\n"
-        f"  world-matrix length scale (source -> export stage): {fscale:.10g}\n"
-        f"  apply_ue_post_matrix={apply_ue_post_matrix}\n"
-        f"  transpose_xform_for_ue_import={transpose_xform_for_ue_import}",
-    )
-    if pivot_world_meters is None:
-        _log_call(log, "  pivot_world_meters=None (no pivot offset)")
-    else:
-        pv = tuple(float(x) for x in pivot_world_meters[:3])
-        _log_call(
-            log,
-            f"  pivot_world_meters={pv} m — applied as T(-pivot)*M before compose_export",
-        )
-    if source_mode == "obj":
-        _log_call(log, f"  OBJ camera node: {obj_node_path!r}")
-    else:
-        _log_call(
-            log,
-            f"  LOP: {lop_node_path!r}  USD Camera prim: {usd_prim_path!r}",
-        )
-
-    root = UsdGeom.Xform.Define(stage, "/World")
-    seg = safe_camera_prim_segment(camera_display_name)
-    cam_path = f"/World/{seg}"
-    cam_schema = UsdGeom.Camera.Define(stage, cam_path)
-    cam_prim = cam_schema.GetPrim()
-    xf = UsdGeom.Xformable(cam_prim)
-    xop = xf.MakeMatrixXform()
-
-    first_intr = None
-    prev_intr_key = None
-    for f in range(int(frame_start), int(frame_end) + 1, step):
-        tc = Usd.TimeCode(float(f))
-        if source_mode == "obj":
-            raw_world = obj_camera_world_matrix(obj_node_path, f)
-            intr = obj_camera_intrinsics(obj_node_path, f)
-        else:
-            raw_world = usd_camera_world_matrix(usd_stage, usd_prim_path, f)
-            intr = usd_intrinsics_from_prim(usd_stage, usd_prim_path, f)
-
-        if first_intr is None:
-            first_intr = intr
-            _log_call(log, "[first frame] intrinsics summary (source -> USD):")
-            for line in _intrinsics_lines(intr, exp_mpu, prefix="  "):
-                _log_call(log, line)
-
-        m_write, steps = camera_xform_pipeline(
-            raw_world,
-            pivot_world_meters=pivot_world_meters,
-            source_meters_per_unit=src_mpu_obj,
-            export_meters_per_unit=export_meters_per_unit,
-            Gf=Gf,
-            apply_ue_post_matrix=apply_ue_post_matrix,
-            transpose_xform_for_ue_import=transpose_xform_for_ue_import,
-        )
-        xop.Set(m_write, tc)
-        _set_projection_and_lens(cam_schema, intr, tc, export_meters_per_unit)
-
-        intr_key = (
-            intr.get("projection"),
-            round(float(intr["focal_length_mm"]), 6),
-            round(float(intr["horizontal_aperture_mm"]), 6),
-            round(float(intr["vertical_aperture_mm"]), 6),
-            round(float(intr["clip_near_m"]), 6),
-            round(float(intr["clip_far_m"]), 6),
-        )
-        intr_changed = prev_intr_key != intr_key
-        prev_intr_key = intr_key
-
-        _log_call(log, f"-- frame {f} (timeCode={float(f)}) --")
-        for line in format_pose_block("  [RAW] source world (Houdini meters)", raw_world):
-            _log_call(log, line)
-        for step_name, smat in steps:
-            for line in format_pose_block(f"  [COMPUTED] {step_name}", smat):
-                _log_call(log, line)
-        if intr_changed:
-            _log_call(log, "  intrinsics changed vs previous frame:")
-            for line in _intrinsics_lines(intr, exp_mpu, prefix="    "):
-                _log_call(log, line)
-        else:
-            _log_call(
-                log,
-                "  intrinsics same as previous frame (matrix may still change); see first-frame block.",
-            )
-
-    if first_intr is not None:
-        _set_sidecar_metadata(cam_prim, first_intr)
-
-    stage.SetDefaultPrim(root.GetPrim())
-    stage.GetRootLayer().documentation = (
-        "Houdini → UE 5.5 camera export. metersPerUnit=%s (1 unit = %.4f m). "
-        "Imaging params on camera use mm for focal/aperture; clipping in stage units."
-        % (export_meters_per_unit, export_meters_per_unit)
-    )
-    stage.Save()
-    _log_call(
-        log,
-        "[metadata] defaultPrim=/World  cameraPrim=%s  rootLayer.startTimeCode=%s endTimeCode=%s"
-        % (cam_path, root_layer.startTimeCode, root_layer.endTimeCode),
-    )
-    _log_call(
-        log,
-        "[UE note] Import via USD Stage Editor (houdini_camera_usd_import): merged file → "
-        "``content_root`` e.g. /Game/houdini_camera with prim_path_folder_structure=False "
-        "so Level Sequences sit under that root (by asset type), not deep /World/... folders.",
-    )
 
 
 def export_merged_cameras_for_ue55(
@@ -506,31 +312,18 @@ def export_merged_cameras_for_ue55(
     )
 
 
-def list_cameras_for_ui(source_mode: str, lop_node_path: str | None = None) -> list[str]:
+def list_obj_cameras_for_ui() -> list[str]:
     """
-    为 UI 列出可选相机路径：``obj`` 下列 ``/obj`` 下所有 cam；``usd`` 下列 LOP stage 内 Camera prim。
+    为面板列出 ``/obj`` 下所有 ``cam`` 类型节点路径（排序）。
 
-    :param source_mode: ``\"obj\"`` 或 ``\"usd\"``。
-    :param lop_node_path: ``usd`` 模式下的 LOP 路径；``obj`` 模式忽略。
-    :return: 路径字符串列表（排序）。
+    :return: 路径字符串列表。
     """
-    sm = (source_mode or "").lower()
-    if sm == "obj":
-        root = hou.node("/obj")
-        if root is None:
-            return []
-        cam_type = hou.nodeType(hou.objNodeTypeCategory(), "cam")
-        paths: list[str] = []
-        for n in root.allSubChildren():
-            if n.type() == cam_type:
-                paths.append(n.path())
-        return sorted(paths)
-    if sm == "usd":
-        if not lop_node_path:
-            return []
-        try:
-            st = usd_stage_from_lop(lop_node_path)
-        except (RuntimeError, ValueError):
-            return []
-        return list_usd_camera_prim_paths(st)
-    return []
+    root = hou.node("/obj")
+    if root is None:
+        return []
+    cam_type = hou.nodeType(hou.objNodeTypeCategory(), "cam")
+    paths: list[str] = []
+    for n in root.allSubChildren():
+        if n.type() == cam_type:
+            paths.append(n.path())
+    return sorted(paths)

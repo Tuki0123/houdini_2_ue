@@ -42,7 +42,7 @@ from houdini_ue_camera.matrix import world_origin_translate_meters
 from houdini_ue_camera.usd_writer import (
     MERGED_USDA_FILENAME,
     export_merged_cameras_for_ue55,
-    list_cameras_for_ui,
+    list_obj_cameras_for_ui,
     safe_camera_prim_segment,
 )
 
@@ -267,7 +267,7 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
     def _refresh_cameras(self) -> None:
         """扫描 ``/obj`` 下相机，合法名进列表，非法名仅打红字日志。"""
         self._clear_cam_widgets()
-        paths = list_cameras_for_ui("obj", None)
+        paths = list_obj_cameras_for_ui()
         invalid = []
         valid = []
         for p in paths:

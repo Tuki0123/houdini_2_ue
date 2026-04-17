@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-从 Houdini OBJ 相机或 Solaris LOP 上的 USD Camera 读取逐帧世界矩阵与成像参数。
+从 Houdini ``/obj`` 相机读取逐帧世界矩阵与成像参数。
 
-面向 ``usd_writer.export_camera_for_ue55``；抛给用户的异常信息保持英文，便于面板日志显示。
+供 ``usd_writer.export_merged_cameras_for_ue55`` 使用；抛给用户的异常信息保持英文，便于面板日志显示。
 """
 
 from __future__ import annotations
 
 import hou
-from pxr import Gf, Usd, UsdGeom
+from pxr import Gf
 
 from .matrix import world_transform_at_frame
 
@@ -136,146 +136,4 @@ def obj_camera_intrinsics(node_path: str, frame: int) -> dict:
         "ortho_width_m": float(ortho_w) if ortho else None,
         "source": "houdini_obj",
         "source_path": n.path(),
-    }
-
-
-def usd_stage_from_lop(lop_path: str) -> Usd.Stage:
-    """
-    从 Solaris LOP 节点获取已烹饪的 ``Usd.Stage``（``hou.LopNode.stage()``）。
-
-    :param lop_path: LOP 节点路径。
-    :raises ValueError: 节点不存在。
-    :raises RuntimeError: 节点上无可用 stage（需先烹饪或有效 LOP 网络）。
-    """
-    n = hou.node(lop_path)
-    if n is None:
-        raise ValueError(f"LOP node not found: {lop_path}")
-    st = n.stage()
-    if st is None:
-        raise RuntimeError(
-            f"No USD stage on node (cook first / use a valid Solaris LOP): {lop_path}"
-        )
-    return st
-
-
-def list_usd_camera_prim_paths(stage: Usd.Stage) -> list[str]:
-    """
-    遍历舞台上所有 ``UsdGeom.Camera`` prim，返回其路径字符串列表（排序后）。
-
-    :param stage: USD Stage。
-    """
-    out: list[str] = []
-    for prim in stage.Traverse():
-        if prim.IsA(UsdGeom.Camera):
-            out.append(prim.GetPath().pathString)
-    return sorted(out)
-
-
-def usd_camera_world_matrix(stage: Usd.Stage, prim_path: str, frame: int, time_code_as_float: bool = True):
-    """
-    计算指定 prim 在给定帧的局部到世界变换矩阵（``Gf.Matrix4d``）。
-
-    :param stage: USD Stage。
-    :param prim_path: Camera prim 路径。
-    :param frame: 帧号；作为 ``Usd.TimeCode`` 传入。
-    :param time_code_as_float: 是否用浮点 time code（与稀疏采样策略一致）。
-    :raises ValueError: prim 无效。
-    """
-    prim = stage.GetPrimAtPath(prim_path)
-    if not prim or not prim.IsValid():
-        raise ValueError(f"Invalid prim: {prim_path}")
-    xf = UsdGeom.Xformable(prim)
-    tc = Usd.TimeCode(float(frame) if time_code_as_float else frame)
-    return xf.ComputeLocalToWorldTransform(tc)
-
-
-def usd_intrinsics_from_prim(stage: Usd.Stage, prim_path: str, frame: int) -> dict:
-    """
-    从 USD Camera prim 读取成像参数，并换算为米制裁剪、毫米焦距/光圈等统一字典格式。
-
-    ``focusDistance`` 等按舞台 ``metersPerUnit`` 转为米。与 ``obj_camera_intrinsics`` 返回结构对齐，
-    供 ``usd_writer`` 写入 USDA。
-
-    :param stage: USD Stage。
-    :param prim_path: Camera prim 路径。
-    :param frame: 采样帧。
-    :raises ValueError: prim 不存在或无效。
-    """
-    prim = stage.GetPrimAtPath(prim_path)
-    if not prim or not prim.IsValid():
-        raise ValueError(f"Invalid prim: {prim_path}")
-    cam = UsdGeom.Camera(prim)
-    tc = Usd.TimeCode(float(frame))
-
-    focal = cam.GetFocalLengthAttr().Get(tc)
-    hap = cam.GetHorizontalApertureAttr().Get(tc)
-    vap = cam.GetVerticalApertureAttr().Get(tc)
-    proj = cam.GetProjectionAttr().Get(tc)
-    if focal is None:
-        focal = cam.GetFocalLengthAttr().Get(Usd.TimeCode.Default())
-    if hap is None:
-        hap = cam.GetHorizontalApertureAttr().Get(Usd.TimeCode.Default())
-    if vap is None:
-        vap = cam.GetVerticalApertureAttr().Get(Usd.TimeCode.Default())
-
-    mpu = float(UsdGeom.GetStageMetersPerUnit(stage))
-
-    near_far = None
-    cr = cam.GetClippingRangeAttr()
-    if cr:
-        near_far = cr.Get(tc)
-        if near_far is None:
-            near_far = cr.Get(Usd.TimeCode.Default())
-
-    focus_m = None
-    fd = cam.GetFocusDistanceAttr() if hasattr(cam, "GetFocusDistanceAttr") else None
-    if fd:
-        raw_fd = fd.Get(tc)
-        if raw_fd is None:
-            raw_fd = fd.Get(Usd.TimeCode.Default())
-        if raw_fd is not None:
-            focus_m = float(raw_fd) * mpu
-
-    fstop_val = None
-    fs = cam.GetFStopAttr() if hasattr(cam, "GetFStopAttr") else None
-    if fs:
-        fstop_val = fs.Get(tc)
-        if fstop_val is None:
-            fstop_val = fs.Get(Usd.TimeCode.Default())
-
-    ow = None
-    ow_attr = cam.GetOrthographicWidthAttr() if hasattr(cam, "GetOrthographicWidthAttr") else None
-    if ow_attr:
-        ow = ow_attr.Get(tc)
-        if ow is None:
-            ow = ow_attr.Get(Usd.TimeCode.Default())
-
-    projection = "perspective"
-    if proj == UsdGeom.Tokens.orthographic:
-        projection = "orthographic"
-    elif proj == UsdGeom.Tokens.perspective:
-        projection = "perspective"
-
-    near_m = far_m = None
-    if near_far is not None:
-        near_m = float(near_far[0]) * mpu
-        far_m = float(near_far[1]) * mpu
-
-    return {
-        "projection": projection,
-        "focal_length_mm": float(focal) if focal is not None else 35.0,
-        "horizontal_aperture_mm": float(hap) if hap is not None else 36.0,
-        "vertical_aperture_mm": (
-            float(vap)
-            if vap is not None
-            else (float(hap) * 24.0 / 36.0 if hap is not None else 24.0)
-        ),
-        "clip_near_m": near_m if near_m is not None else 0.01,
-        "clip_far_m": far_m if far_m is not None else 10000.0,
-        "focus_distance_m": focus_m if focus_m is not None else None,
-        "f_stop": float(fstop_val) if fstop_val is not None else None,
-        "color_temperature_K": None,
-        "ortho_width_m": float(ow) * mpu if ow is not None else None,
-        "source": "houdini_usd",
-        "source_path": prim_path,
     }

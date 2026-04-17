@@ -51,7 +51,7 @@ def ue55_optional_post_matrix(Gf):
     """
     可选固定后乘矩阵（用于与 UE 手性/轴向对齐实验）。默认单位阵，不改变结果。
 
-    与 ``export_camera_for_ue55(..., apply_ue_post_matrix=True)`` 配合；需要时在实现内
+    与 ``export_merged_cameras_for_ue55(..., apply_ue_post_matrix=True)`` 配合；需要时在实现内
     改写矩阵并勾选面板隐藏选项。
     """
     return Gf.Matrix4d(1.0)
