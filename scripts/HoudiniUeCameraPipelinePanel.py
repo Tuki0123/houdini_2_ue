@@ -34,6 +34,11 @@ import hou
 from PySide2 import QtCore, QtWidgets
 
 from houdini_ue_camera.coords import DEFAULT_EXPORT_METERS_PER_UNIT
+from houdini_ue_camera.pipeline_paths import (
+    MANIFEST_FILENAME,
+    fixed_manifest_path_for_running_houdini,
+)
+from houdini_ue_camera.matrix import world_origin_translate_meters
 from houdini_ue_camera.usd_writer import (
     MERGED_USDA_FILENAME,
     export_merged_cameras_for_ue55,
@@ -42,7 +47,6 @@ from houdini_ue_camera.usd_writer import (
 )
 from houdini_ue_camera.version import LAST_MODIFIED, VERSION
 
-MANIFEST_NAME = "houdini_ue_camera_manifest.json"
 _CAM_TOKEN = re.compile(r"^[A-Za-z0-9_]+$")
 
 # 货架/脚本打开的「单例」浮动面板；与 ``createInterface`` 嵌入路径分离（见 ``createInterface`` 说明）。
@@ -69,18 +73,18 @@ def _default_frame_end() -> int:
 
 def _node_world_translate_meters(n: hou.Node) -> tuple[float, float, float] | None:
     """
-    读取节点世界变换的平移分量（米），用于 Pivot「从选中读取」。
+    读取节点世界原点平移（米），用于 Pivot「从选中读取」。
+
+    实现委托 ``world_origin_translate_meters``，与相机导出采样矩阵同源（Gf 列平移列），
+    避免 ``hou.Matrix4.extractTranslates`` 与 ``hou_matrix4_to_gf`` 转置组合不一致。
 
     :return: ``(tx, ty, tz)`` 或读取失败时 ``None``。
     """
     try:
-        m = n.worldTransform()
-        if hasattr(m, "extractTranslates"):
-            t = m.extractTranslates()
-            return (float(t[0]), float(t[1]), float(t[2]))
+        fr = int(hou.frame())
     except Exception:
-        pass
-    return None
+        fr = None
+    return world_origin_translate_meters(n, frame=fr)
 
 
 def _frame_range_hint(cam_path: str) -> str:
@@ -318,7 +322,12 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
         self._pvx.setValue(tr[0])
         self._pvy.setValue(tr[1])
         self._pvz.setValue(tr[2])
-        self._log_line(f"[Pivot] from {sel[0].path()}: {tr}", "info")
+        self._log_line(f"[Pivot] from {sel[0].path()} @ frame {int(hou.frame())}: {tr}", "info")
+        self._log_line(
+            "[Pivot] Baked into exported USD camera xforms (export log: after_pivot_world_m). "
+            "Does not move actors in UE; place LevelSequenceActor in EUW if needed.",
+            "info",
+        )
 
     def _selected_cam_paths(self) -> list[str]:
         """返回当前勾选的相机完整路径列表。"""
@@ -354,9 +363,6 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
         :param out_dir: 导出目录。
         """
         rm: list[Path] = []
-        man = out_dir / MANIFEST_NAME
-        if man.is_file():
-            rm.append(man)
         merged = out_dir / MERGED_USDA_FILENAME
         if merged.is_file():
             rm.append(merged)
@@ -366,7 +372,9 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
         """
         执行导出：删旧 manifest/合并 USDA → ``export_merged_cameras_for_ue55`` → 写清单。
 
-        多台相机写入**单个** ``USDA``，UE 侧一次导入 ``/Game/houdini_camera``（或所选 ``content_root``）以得到 Level Sequence。
+        多台相机写入**单个** ``USDA`` 到用户所选目录；**清单**始终覆盖写入
+        ``$HOUDINI_USER_PREF_DIR/houdini_ue_camera_manifest.json``（与 UE 默认读取路径一致），
+        且 ``export.merged_usda_absolute`` 指向该 USDA 的绝对路径。
         """
         out_dir_s = self._export_dir.text().strip()
         if not out_dir_s:
@@ -462,16 +470,18 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
                 "transpose_xform_for_ue_import": self._chk_transpose.isChecked(),
                 "apply_ue_post_matrix": self._chk_ue.isChecked(),
                 "merged_usda_relative": MERGED_USDA_FILENAME,
+                "merged_usda_absolute": str(merged_path.resolve()),
             },
             "cameras": manifest_cameras,
         }
-        man_path = out_dir / MANIFEST_NAME
+        man_path = fixed_manifest_path_for_running_houdini()
+        man_path.parent.mkdir(parents=True, exist_ok=True)
         man_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        self._log_line(f"[done] manifest: {man_path.as_posix()}", "info")
+        self._log_line(f"[done] manifest (fixed): {man_path.as_posix()}", "info")
         QtWidgets.QMessageBox.information(
             self,
             "Export",
-            f"Wrote merged USDA + manifest.\n{merged_path}\n{man_path}",
+            f"Wrote merged USDA:\n{merged_path}\n\nManifest (fixed location):\n{man_path}",
         )
 
 

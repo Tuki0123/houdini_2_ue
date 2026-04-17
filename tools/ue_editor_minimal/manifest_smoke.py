@@ -2,23 +2,22 @@
 """
 Read and validate houdini_ue_camera_manifest.json (same schema as Houdini pipeline panel).
 
-Copy to: <YourProject>/Content/Python/manifest_smoke.py
-
-Usage (Output Log → Python):
-    import manifest_smoke
-    manifest_smoke.run_manifest_smoke(r"C:\\path\\to\\folder\\houdini_ue_camera_manifest.json")
+Shipped with HoudiniUeCameraImporter plugin under Plugins/.../Content/Python/.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import platform
 from pathlib import Path
 from typing import Any
 
 import unreal
 
 MANIFEST_FILENAME = "houdini_ue_camera_manifest.json"
+# 与 ``houdini_ue_camera.pipeline_paths.HOUDINI_USER_AREA_VERSION``、根目录 installHouPackage 一致
+DEFAULT_HOUDINI_USER_AREA_VERSION = "20.5"
 # 与 Houdini ``houdini_ue_camera.usd_writer.MERGED_USDA_FILENAME`` 一致（UE 侧不 import 该包）
 DEFAULT_MERGED_USDA_RELATIVE = "houdini_cameras_merged.usda"
 
@@ -36,12 +35,15 @@ def _effective_usda_relative(cam: dict[str, Any]) -> str | None:
 
 def manifest_uses_merged_usda(data: dict[str, Any]) -> bool:
     """
-    是否按「合并 USDA」管线：``export.merged_usda_relative`` 非空，或每台相机行
-    具备 ``usd_prim_path`` 且 **无有效** ``usda_relative``（兼容键存在但为 ``null`` / ``""`` 的 JSON）。
+    是否按「合并 USDA」管线：``export.merged_usda_relative`` / ``merged_usda_absolute`` 非空，
+    或每台相机行具备 ``usd_prim_path`` 且 **无有效** ``usda_relative``。
     """
     exp = data.get("export")
-    if isinstance(exp, dict) and str(exp.get("merged_usda_relative") or "").strip():
-        return True
+    if isinstance(exp, dict):
+        if str(exp.get("merged_usda_relative") or "").strip():
+            return True
+        if str(exp.get("merged_usda_absolute") or "").strip():
+            return True
     cams = data.get("cameras") or []
     if not isinstance(cams, list) or not cams:
         return False
@@ -65,6 +67,43 @@ def merged_usda_relative_for_import(data: dict[str, Any]) -> str | None:
         return DEFAULT_MERGED_USDA_RELATIVE
     rel = exp.get("merged_usda_relative")
     return str(rel).strip() if rel else DEFAULT_MERGED_USDA_RELATIVE
+
+
+def merged_usda_file_for_import(data: dict[str, Any], manifest_abs_path: str) -> Path | None:
+    """合并 USDA 的磁盘 ``Path``；优先 ``export.merged_usda_absolute``。"""
+    if not manifest_uses_merged_usda(data):
+        return None
+    exp = data.get("export") or {}
+    if isinstance(exp, dict):
+        abs_raw = exp.get("merged_usda_absolute")
+        if abs_raw is not None and str(abs_raw).strip():
+            return Path(os.path.expandvars(str(abs_raw).strip().strip('"')))
+    base = _as_path(manifest_abs_path).parent
+    rel = merged_usda_relative_for_import(data) or DEFAULT_MERGED_USDA_RELATIVE
+    return base / str(rel)
+
+
+def default_fixed_manifest_abs_path(
+    *,
+    version_folder: str = DEFAULT_HOUDINI_USER_AREA_VERSION,
+    home: Path | None = None,
+) -> str:
+    """
+    未传路径时使用的固定清单位置（与仓库 ``installHouPackage.houdini_locations`` 规则一致）。
+
+    - Windows: ``~/Documents/houdini<ver>/houdini_ue_camera_manifest.json``
+    - macOS: ``~/Library/Preferences/houdini/<ver>/...``
+    - Linux: ``~/houdini<ver>/...``
+    """
+    home = home or Path.home()
+    sys = platform.system()
+    if sys == "Windows":
+        pref = home / "Documents" / f"houdini{version_folder}"
+    elif sys == "Darwin":
+        pref = home / "Library" / "Preferences" / "houdini" / version_folder
+    else:
+        pref = home / f"houdini{version_folder}"
+    return str((pref / MANIFEST_FILENAME).resolve())
 
 
 def _as_path(manifest_abs: str) -> Path:
@@ -132,12 +171,14 @@ def validate_manifest(data: dict[str, Any]) -> list[str]:
 
 
 def check_usda_files(manifest_path: str, data: dict[str, Any]) -> list[str]:
-    """Return warnings for each missing .usda next to manifest (merged or per-camera)."""
+    """Return warnings for each missing .usda (merged: absolute or manifest 同目录相对)."""
     warnings: list[str] = []
     base = _as_path(manifest_path).parent
     if manifest_uses_merged_usda(data):
-        rel = merged_usda_relative_for_import(data) or DEFAULT_MERGED_USDA_RELATIVE
-        fp = base / str(rel)
+        fp = merged_usda_file_for_import(data, manifest_path)
+        if fp is None:
+            warnings.append("merged USDA path unresolved")
+            return warnings
         if not fp.is_file():
             warnings.append(f"missing merged file: {fp}")
         return warnings
@@ -157,12 +198,22 @@ def check_usda_files(manifest_path: str, data: dict[str, Any]) -> list[str]:
     return warnings
 
 
-def run_manifest_smoke(manifest_abs_path: str, *, show_dialog: bool = True) -> bool:
+def run_manifest_smoke(
+    manifest_abs_path: str | None = None,
+    *,
+    show_dialog: bool = True,
+    show_success_dialog: bool = True,
+) -> bool:
     """
-    Load manifest, validate schema, check sibling .usda files, log summary.
-    Returns True if validation passed (missing .usda only warns, still True if schema OK).
+    Load manifest, validate schema, check .usda files, log summary.
+    ``manifest_abs_path`` 为 ``None`` 或空串时使用 ``default_fixed_manifest_abs_path()``。
+
+    ``show_dialog``：加载/校验失败时是否弹窗。``show_success_dialog``：全部通过时是否弹「Manifest OK」
+    （EUW 里可传 ``show_success_dialog=False``，仅 ``print`` / Output Log）。
     """
     prefix = "[manifest_smoke]"
+    if manifest_abs_path is None or not str(manifest_abs_path).strip():
+        manifest_abs_path = default_fixed_manifest_abs_path()
     try:
         data = load_manifest(manifest_abs_path)
     except Exception as exc:  # noqa: BLE001
@@ -207,7 +258,7 @@ def run_manifest_smoke(manifest_abs_path: str, *, show_dialog: bool = True) -> b
         f"fps={exp.get('fps')} mpu={exp.get('export_meters_per_unit')}"
     )
 
-    if show_dialog:
+    if show_dialog and show_success_dialog:
         try:
             msg = (
                 f"Manifest OK.\n"

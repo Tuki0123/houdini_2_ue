@@ -253,6 +253,14 @@ def export_camera_for_ue55(
         f"  apply_ue_post_matrix={apply_ue_post_matrix}\n"
         f"  transpose_xform_for_ue_import={transpose_xform_for_ue_import}",
     )
+    if pivot_world_meters is None:
+        _log_call(log, "  pivot_world_meters=None (no pivot offset)")
+    else:
+        pv = tuple(float(x) for x in pivot_world_meters[:3])
+        _log_call(
+            log,
+            f"  pivot_world_meters={pv} m — applied as T(-pivot)*M before compose_export",
+        )
     if source_mode == "obj":
         _log_call(log, f"  OBJ camera node: {obj_node_path!r}")
     else:
@@ -407,6 +415,14 @@ def export_merged_cameras_for_ue55(
         f"  apply_ue_post_matrix={apply_ue_post_matrix}\n"
         f"  transpose_xform_for_ue_import={transpose_xform_for_ue_import}",
     )
+    if pivot_world_meters is None:
+        _log_call(log, "  pivot_world_meters=None (no pivot offset)")
+    else:
+        pv = tuple(float(x) for x in pivot_world_meters[:3])
+        _log_call(
+            log,
+            f"  pivot_world_meters={pv} m — applied as T(-pivot)*M before compose_export (see per-frame after_pivot_world_m)",
+        )
 
     UsdGeom.Xform.Define(stage, "/World")
     cams_runtime: list[tuple[str, str, UsdGeom.Camera, object]] = []

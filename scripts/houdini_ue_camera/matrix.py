@@ -53,3 +53,22 @@ def world_transform_at_frame(node: hou.Node, frame: int, gf_module) -> object:
     """
     hou.setFrame(int(frame))
     return hou_matrix4_to_gf(node.worldTransform(), gf_module)
+
+
+def world_origin_translate_meters(node: hou.Node, *, frame: int | None = None) -> tuple[float, float, float] | None:
+    """
+    读取节点世界原点（局部 0,0,0）在世界空间中的位置（米），与 ``world_transform_at_frame`` 使用同一套
+    ``hou_matrix4_to_gf`` 转置后再取 **Gf 列向量** 平移列（第 4 列前三项）。
+
+    用于面板 Pivot「从选中读取」：勿用 ``hou.Matrix4.extractTranslates()`` 与导出矩阵混用，二者在
+    行/列约定下可能数值不一致，导致「选了 pivot 但导出像没生效」。
+    """
+    try:
+        from pxr import Gf
+
+        if frame is not None:
+            hou.setFrame(int(frame))
+        m_gf = hou_matrix4_to_gf(node.worldTransform(), Gf)
+        return (float(m_gf[0][3]), float(m_gf[1][3]), float(m_gf[2][3]))
+    except Exception:
+        return None
