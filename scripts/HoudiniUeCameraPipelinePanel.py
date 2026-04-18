@@ -24,7 +24,6 @@ Houdini → UE 摄像机管线导出面板。
 
 from __future__ import annotations
 
-import html
 import json
 import re
 from datetime import datetime, timezone
@@ -33,7 +32,7 @@ from pathlib import Path
 import hou
 from PySide2 import QtCore, QtWidgets
 
-from houdini_ue_camera.coords import DEFAULT_EXPORT_METERS_PER_UNIT
+from houdini_ue_camera.compute import DEFAULT_EXPORT_METERS_PER_UNIT
 from houdini_ue_camera.pipeline_paths import (
     MANIFEST_FILENAME,
     fixed_manifest_path_for_running_houdini,
@@ -57,46 +56,12 @@ def _camera_basename(path: str) -> str:
     return path.strip().split("/")[-1] or path
 
 
-def _is_valid_camera_name(path: str) -> bool:
-    """判断 basename 是否仅含字母数字下划线（与 USD prim 安全段、需求文档一致）。"""
-    return bool(_CAM_TOKEN.match(_camera_basename(path)))
-
-
 def _default_frame_end() -> int:
     """取播放条当前播放范围右端点作为默认结束帧（整数）。"""
     try:
         return int(hou.playbar.playbackRange()[1])
     except Exception:
         return 24
-
-
-def _node_world_translate_meters(n: hou.Node) -> tuple[float, float, float] | None:
-    """
-    读取节点世界原点平移（米），用于 Pivot「从选中读取」。
-
-    实现委托 ``world_origin_translate_meters``，与相机导出采样矩阵同源（Gf 列平移列），
-    避免 ``hou.Matrix4.extractTranslates`` 与 ``hou_matrix4_to_gf`` 转置组合不一致。
-
-    :return: ``(tx, ty, tz)`` 或读取失败时 ``None``。
-    """
-    try:
-        fr = int(hou.frame())
-    except Exception:
-        fr = None
-    return world_origin_translate_meters(n, frame=fr)
-
-
-def _frame_range_hint(_cam_path: str) -> str:
-    """
-    在相机列表每行右侧显示的帧范围提示（占位；完整「每机独立范围」见需求 C12）。
-
-    :param _cam_path: 相机路径（预留 C12 每机独立帧范围）。
-    """
-    try:
-        f1 = _default_frame_end()
-        return f"1-{f1} (playbar default)"
-    except Exception:
-        return "-"
 
 
 class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
@@ -198,9 +163,6 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
         root.addLayout(pv)
 
         # 进阶选项：不出现在布局中，但导出仍读取（与 manifest 中布尔/ mpu 一致）
-        self._chk_ue = QtWidgets.QCheckBox(self)
-        self._chk_ue.setChecked(False)
-        self._chk_ue.setVisible(False)
         self._chk_transpose = QtWidgets.QCheckBox(self)
         self._chk_transpose.setChecked(True)
         self._chk_transpose.setVisible(False)
@@ -253,8 +215,7 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
         :param level: ``info`` / ``warn`` / ``err`` 控制颜色。
         """
         color = {"info": "#333", "warn": "#a60", "err": "#c00"}.get(level, "#333")
-        esc = html.escape(text, quote=True)
-        self._log.append(f"<span style='color:{color};'>{esc}</span>")
+        self._log.append(f"<span style='color:{color};'>{text}</span>")
 
     def _clear_cam_widgets(self) -> None:
         """移除当前相机列表行的所有控件并重置内部映射。"""
@@ -271,13 +232,15 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
         invalid = []
         valid = []
         for p in paths:
-            if _is_valid_camera_name(p):
+            # basename 须匹配 [A-Za-z0-9_]+（与 USD prim 安全段、需求一致）
+            if _CAM_TOKEN.match(_camera_basename(p)):
                 valid.append(p)
             else:
                 invalid.append(p)
 
         for p in sorted(invalid):
             self._log_line(f"[invalid name] skipped: {p}", "err")
+        hint_end = _default_frame_end()
         for p in sorted(valid):
             row = QtWidgets.QWidget()
             h = QtWidgets.QHBoxLayout(row)
@@ -286,10 +249,10 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
             cb.setChecked(False)
             name = _camera_basename(p)
             lbl = QtWidgets.QLabel(
-                f"<b>{html.escape(name)}</b> &mdash; <code>{html.escape(p)}</code>"
+                f"<b>{name}</b> &mdash; <code>{p}</code>"
             )
             lbl.setTextFormat(QtCore.Qt.RichText)
-            info = QtWidgets.QLabel(f"frames {_frame_range_hint(p)}")
+            info = QtWidgets.QLabel(f"frames 1-{hint_end} (playbar default)")
             h.addWidget(cb)
             h.addWidget(lbl, 1)
             h.addWidget(info)
@@ -313,7 +276,7 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
         if not sel:
             self._log_line("[Pivot] No node selected.", "warn")
             return
-        tr = _node_world_translate_meters(sel[0])
+        tr = world_origin_translate_meters(sel[0], frame=int(hou.frame()))
         if tr is None:
             self._log_line("[Pivot] Could not read world translate; enter pivot manually.", "warn")
             return
@@ -434,8 +397,7 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
 
         def log_cb(msg: str):
             """将导出库传入的英文日志行追加到面板（小号灰色）。"""
-            esc = html.escape(msg, quote=True)
-            self._log.append(f"<span style='color:#555;font-size:10pt;'>{esc}</span>")
+            self._log.append(f"<span style='color:#555;font-size:10pt;'>{msg}</span>")
 
         merged_path = out_dir / MERGED_USDA_FILENAME
         self._log_line(f"[export merged] cameras={len(cams)} -> {merged_path.as_posix()}", "info")
@@ -449,7 +411,6 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
                 fps=fps,
                 export_meters_per_unit=export_mpu,
                 source_meters_per_unit=src_mpu,
-                apply_ue_post_matrix=self._chk_ue.isChecked(),
                 pivot_world_meters=pivot,
                 log=log_cb,
                 transpose_xform_for_ue_import=self._chk_transpose.isChecked(),
@@ -472,7 +433,6 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
                 "source_meters_per_unit": src_mpu,
                 "pivot_world_meters": list(pivot),
                 "transpose_xform_for_ue_import": self._chk_transpose.isChecked(),
-                "apply_ue_post_matrix": self._chk_ue.isChecked(),
                 "merged_usda_relative": MERGED_USDA_FILENAME,
                 "merged_usda_absolute": str(merged_path.resolve()),
             },

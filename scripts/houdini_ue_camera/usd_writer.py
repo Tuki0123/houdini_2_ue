@@ -14,9 +14,10 @@ import hou
 from pxr import Gf, Usd, UsdGeom
 
 from .compute import camera_xform_pipeline
-from .coords import DEFAULT_EXPORT_METERS_PER_UNIT, length_scale_factor
+from .compute import DEFAULT_EXPORT_METERS_PER_UNIT
+from .matrix import hou_matrix4_to_gf
 from .transform_log import format_pose_block
-from .sampling import obj_camera_intrinsics, obj_camera_world_matrix
+from .sampling import _obj_camera_intrinsics_from_node
 
 # 合并导出：单 USDA 文件名（与 manifest ``merged_usda_relative`` 一致）
 MERGED_USDA_FILENAME = "houdini_cameras_merged.usda"
@@ -171,7 +172,6 @@ def export_merged_cameras_for_ue55(
     fps: float = 24.0,
     export_meters_per_unit: float = DEFAULT_EXPORT_METERS_PER_UNIT,
     source_meters_per_unit: float = 1.0,
-    apply_ue_post_matrix: bool = False,
     pivot_world_meters=None,
     log=None,
     transpose_xform_for_ue_import: bool = True,
@@ -205,7 +205,7 @@ def export_merged_cameras_for_ue55(
 
     src_mpu_obj = float(source_meters_per_unit)
     exp_mpu = float(export_meters_per_unit)
-    fscale = length_scale_factor(src_mpu_obj, exp_mpu)
+    fscale = float(src_mpu_obj) / float(exp_mpu)
     step = max(1, int(frame_step or 1))
 
     _log_call(
@@ -217,7 +217,6 @@ def export_merged_cameras_for_ue55(
         f"  export_metersPerUnit={exp_mpu}\n"
         f"  source_metersPerUnit={src_mpu_obj}\n"
         f"  world-matrix length scale (source -> export stage): {fscale:.10g}\n"
-        f"  apply_ue_post_matrix={apply_ue_post_matrix}\n"
         f"  transpose_xform_for_ue_import={transpose_xform_for_ue_import}",
     )
     if pivot_world_meters is None:
@@ -230,25 +229,30 @@ def export_merged_cameras_for_ue55(
         )
 
     UsdGeom.Xform.Define(stage, "/World")
-    cams_runtime: list[tuple[str, str, UsdGeom.Camera, object]] = []
+    cams_runtime: list[tuple[hou.Node, str, UsdGeom.Camera, object]] = []
     for obj_path in camera_obj_paths:
-        display = obj_path.strip().split("/")[-1] or "cam"
+        op = obj_path.strip()
+        n = hou.node(op)
+        if n is None:
+            raise ValueError(f"Node not found: {obj_path!r}")
+        display = op.split("/")[-1] or "cam"
         seg = safe_camera_prim_segment(display)
         cam_path = f"/World/{seg}"
         cam_schema = UsdGeom.Camera.Define(stage, cam_path)
         xf = UsdGeom.Xformable(cam_schema.GetPrim())
         xop = xf.MakeMatrixXform()
-        cams_runtime.append((obj_path, seg, cam_schema, xop))
-        _log_call(log, f"  prim: {cam_path}  <=  {obj_path!r}")
+        cams_runtime.append((n, seg, cam_schema, xop))
+        _log_call(log, f"  prim: {cam_path}  <=  {op!r}")
 
     first_intr_done: set[str] = set()
     prev_intr_key: dict[str, tuple] = {}
 
     for f in range(int(frame_start), int(frame_end) + 1, step):
+        hou.setFrame(int(f))
         tc = Usd.TimeCode(float(f))
-        for obj_path, seg, cam_schema, xop in cams_runtime:
-            raw_world = obj_camera_world_matrix(obj_path, f)
-            intr = obj_camera_intrinsics(obj_path, f)
+        for n, seg, cam_schema, xop in cams_runtime:
+            raw_world = hou_matrix4_to_gf(n.worldTransform(), Gf)
+            intr = _obj_camera_intrinsics_from_node(n)
 
             if seg not in first_intr_done:
                 first_intr_done.add(seg)
@@ -263,7 +267,6 @@ def export_merged_cameras_for_ue55(
                 source_meters_per_unit=src_mpu_obj,
                 export_meters_per_unit=export_meters_per_unit,
                 Gf=Gf,
-                apply_ue_post_matrix=apply_ue_post_matrix,
                 transpose_xform_for_ue_import=transpose_xform_for_ue_import,
             )
             xop.Set(m_write, tc)

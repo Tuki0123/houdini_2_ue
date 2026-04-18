@@ -1,14 +1,62 @@
 # -*- coding: utf-8 -*-
 """
-相机矩阵「各维度」计算链：从采样得到的源世界矩阵到最终写入 USDA 的 xform 矩阵。
+相机矩阵计算链：从采样得到的源世界矩阵到最终写入 USDA 的 xform 矩阵。
 
-设计：新增能力（如 FOV/手性对齐）时在本文件增加纯函数，并在 ``camera_xform_pipeline`` 中插入一步即可；
-读取参数仍在 ``sampling`` / 面板，写出属性仍在 ``usd_writer``。
+含 **导出 Stage 的 metersPerUnit** 与 ``compose_export_matrix``（仅缩放平移、旋转保持正交），
+以及 pivot、可选 UE 转置等步骤。OpenUSD 舞台长度单位说明：
+https://openusd.org/release/glossary.html#usdglossary-metersperunit
+
+设计：新增能力时在 ``camera_xform_pipeline`` 中插入步骤即可；读取参数仍在 ``sampling`` / 面板，写出属性仍在 ``usd_writer``。
 """
 
 from __future__ import annotations
 
-from .coords import compose_export_matrix
+# 导出 Stage 的 metersPerUnit：0.01 ⇒ 1 USD 单位 = 1 厘米（与 UE 世界单位常见约定一致）
+DEFAULT_EXPORT_METERS_PER_UNIT = 0.01
+
+
+def compose_export_matrix(
+    world_gf,
+    source_meters_per_unit: float,
+    export_meters_per_unit: float,
+    Gf,
+):
+    """
+    将「源世界矩阵（米）」合成到导出 Stage：仅缩放平移，旋转 3×3 保持正交。
+
+    假定 ``world_gf`` 已为列向量约定（与 ``matrix.hou_matrix4_to_gf`` 输出一致）。
+
+    :param world_gf: 源世界 ``Gf.Matrix4d``。
+    :param source_meters_per_unit: 源长度单位。
+    :param export_meters_per_unit: 导出 Stage ``metersPerUnit``。
+    :param Gf: ``pxr.Gf``。
+    :return: 导出用 ``Gf.Matrix4d``。
+    """
+    # 平移缩放：源/导出 Stage 的 metersPerUnit 之比（见 OpenUSD 舞台长度单位）。
+    f = float(source_meters_per_unit) / float(export_meters_per_unit)
+    m = Gf.Matrix4d(world_gf)
+    rot3 = m.ExtractRotationMatrix()
+    # 列向量平移在第 4 列；勿用 ExtractTranslation()（易与底行混淆）
+    trans = Gf.Vec3d(m[0][3], m[1][3], m[2][3])
+    ts = Gf.Vec3d(trans[0] * f, trans[1] * f, trans[2] * f)
+    return Gf.Matrix4d(
+        rot3[0][0],
+        rot3[0][1],
+        rot3[0][2],
+        ts[0],
+        rot3[1][0],
+        rot3[1][1],
+        rot3[1][2],
+        ts[1],
+        rot3[2][0],
+        rot3[2][1],
+        rot3[2][2],
+        ts[2],
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
 
 
 def _matrix4d_translation_column_vec(Gf, tx: float, ty: float, tz: float):
@@ -77,7 +125,6 @@ def camera_xform_pipeline(
     source_meters_per_unit: float,
     export_meters_per_unit: float,
     Gf,
-    apply_ue_post_matrix: bool,
     transpose_xform_for_ue_import: bool,
 ):
     """
@@ -97,7 +144,6 @@ def camera_xform_pipeline(
         float(source_meters_per_unit),
         float(export_meters_per_unit),
         Gf,
-        apply_ue_post_matrix,
     )
     steps.append(("compose_export_stage_m", m_compose))
 

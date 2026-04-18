@@ -77,27 +77,12 @@ def obj_camera_world_matrix(node_path: str, frame: int):
     return world_transform_at_frame(n, frame, Gf)
 
 
-def obj_camera_intrinsics(node_path: str, frame: int) -> dict:
+def _obj_camera_intrinsics_from_node(n: hou.Node) -> dict:
     """
-    读取 OBJ 相机常用成像参数，返回字典（焦距/光圈为毫米，裁剪/正交宽度为米）。
+    在**当前时间轴帧**已正确设置的前提下，从相机节点读取成像字典。
 
-    水平光圈来自 ``aperture``（毫米）。垂直光圈按 Houdini 与 Mantra 一致的关系由分辨率与
-    **像素宽高比** ``aspect``（非图像宽高比）推算：
-    ``vertical = horizontal * res_y / (res_x * pixel_aspect)``。
-    若读不到分辨率则退回 ``vertical = horizontal``（与旧版错误行为在 PAR=1 时相同，仅作兜底）。
-
-    正交判定：``orthowidth`` > 0。
-
-    :param node_path: 相机节点路径。
-    :param frame: 设置当前帧后求值。
-    :return: 内含 ``projection``、``focal_length_mm``、裁剪、可选 ``focus_distance_m`` 等键。
-    :raises ValueError: 节点不存在。
+    供 ``obj_camera_intrinsics`` 与 ``usd_writer`` 合并导出循环使用（调用方已 ``setFrame``）。
     """
-    hou.setFrame(int(frame))
-    n = hou.node(node_path)
-    if n is None:
-        raise ValueError(f"Node not found: {node_path}")
-
     focal_mm = _parm_eval_float(n, ("focal",), 35.0)
     hap_mm = _parm_eval_float(n, ("aperture",), 36.0)
     # 官方文档：View → Pixel aspect ratio，参数名 ``aspect``（IFD image:pixelaspect）
@@ -137,3 +122,26 @@ def obj_camera_intrinsics(node_path: str, frame: int) -> dict:
         "source": "houdini_obj",
         "source_path": n.path(),
     }
+
+
+def obj_camera_intrinsics(node_path: str, frame: int) -> dict:
+    """
+    读取 OBJ 相机常用成像参数，返回字典（焦距/光圈为毫米，裁剪/正交宽度为米）。
+
+    水平光圈来自 ``aperture``（毫米）。垂直光圈按 Houdini 与 Mantra 一致的关系由分辨率与
+    **像素宽高比** ``aspect``（非图像宽高比）推算：
+    ``vertical = horizontal * res_y / (res_x * pixel_aspect)``。
+    若读不到分辨率则退回 ``vertical = horizontal``（与旧版错误行为在 PAR=1 时相同，仅作兜底）。
+
+    正交判定：``orthowidth`` > 0。
+
+    :param node_path: 相机节点路径。
+    :param frame: 设置当前帧后求值。
+    :return: 内含 ``projection``、``focal_length_mm``、裁剪、可选 ``focus_distance_m`` 等键。
+    :raises ValueError: 节点不存在。
+    """
+    hou.setFrame(int(frame))
+    n = hou.node(node_path)
+    if n is None:
+        raise ValueError(f"Node not found: {node_path}")
+    return _obj_camera_intrinsics_from_node(n)
