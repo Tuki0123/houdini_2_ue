@@ -38,6 +38,7 @@ from houdini_ue_camera.pipeline_paths import (
     fixed_manifest_path_for_running_houdini,
 )
 from houdini_ue_camera.matrix import world_origin_translate_meters
+from houdini_ue_camera.ue_editor_inject import inject_ue_editor_minimal
 from houdini_ue_camera.usd_writer import (
     MERGED_USDA_FILENAME,
     export_merged_cameras_for_ue55,
@@ -89,6 +90,19 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
         btn_browse.clicked.connect(self._browse_export_dir)
         dir_row.addWidget(btn_browse)
         root.addLayout(dir_row)
+
+        ue_row = QtWidgets.QHBoxLayout()
+        ue_row.addWidget(QtWidgets.QLabel("UE project directory:"))
+        self._ue_project_dir = QtWidgets.QLineEdit()
+        self._ue_project_dir.setPlaceholderText("Path to folder containing .uproject (optional)")
+        ue_row.addWidget(self._ue_project_dir, 1)
+        btn_ue_browse = QtWidgets.QPushButton("Browse...")
+        btn_ue_browse.clicked.connect(self._browse_ue_project_dir)
+        ue_row.addWidget(btn_ue_browse)
+        self._btn_ue_inject = QtWidgets.QPushButton("UE端工具注入")
+        self._btn_ue_inject.clicked.connect(self._inject_ue_tools)
+        ue_row.addWidget(self._btn_ue_inject)
+        root.addLayout(ue_row)
 
         root.addWidget(QtWidgets.QLabel("Cameras (/obj, basename must match [A-Za-z0-9_]+):"))
         head = QtWidgets.QHBoxLayout()
@@ -206,6 +220,65 @@ class HoudiniUeCameraPipelinePanel(QtWidgets.QDialog):
         )
         if d:
             self._export_dir.setText(Path(d).as_posix())
+
+    def _browse_ue_project_dir(self) -> None:
+        """弹出目录选择，更新 UE 工程根路径。"""
+        d = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "Select UE project directory (folder with .uproject)",
+            self._ue_project_dir.text().strip() or "",
+        )
+        if d:
+            self._ue_project_dir.setText(Path(d).as_posix())
+
+    def _inject_ue_tools(self) -> None:
+        """将 ``tools/ue_editor_minimal`` 中 ``.py`` / ``.uasset`` 复制到 ``Content/Python``。"""
+        raw = self._ue_project_dir.text().strip()
+        if not raw:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "UE inject",
+                "Please set UE project directory first.",
+            )
+            return
+        ue_root = Path(raw)
+        if not ue_root.is_dir():
+            QtWidgets.QMessageBox.warning(self, "UE inject", f"Not a directory:\n{ue_root}")
+            return
+        if not list(ue_root.glob("*.uproject")):
+            ret = QtWidgets.QMessageBox.question(
+                self,
+                "UE inject",
+                "No .uproject file found in this folder. Inject anyway?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if ret != QtWidgets.QMessageBox.Yes:
+                self._log_line("[UE inject] cancelled (no .uproject).", "warn")
+                return
+        try:
+            copied, dest = inject_ue_editor_minimal(ue_root)
+        except FileNotFoundError as exc:
+            self._log_line(f"[UE inject] source missing: {exc!s}", "err")
+            QtWidgets.QMessageBox.critical(
+                self,
+                "UE inject",
+                "Could not find tools/ue_editor_minimal under package repo.\n"
+                "Re-run installHouPackage.py so CUSTOM_ENV points at this repository.",
+            )
+            return
+        except OSError as exc:
+            self._log_line(f"[UE inject] failed: {exc!r}", "err")
+            QtWidgets.QMessageBox.critical(self, "UE inject", str(exc))
+            return
+        for p in copied:
+            self._log_line(f"[UE inject] copied -> {p.as_posix()}", "info")
+        self._log_line(f"[UE inject] done. Target dir: {dest.as_posix()}", "info")
+        QtWidgets.QMessageBox.information(
+            self,
+            "UE inject",
+            f"Copied {len(copied)} file(s) to:\n{dest}",
+        )
 
     def _log_line(self, text: str, level: str = "info") -> None:
         """
